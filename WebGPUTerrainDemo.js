@@ -17,6 +17,7 @@ export default function WebGPUTerrainDemo() {
     if (!containerRef.current) return;
 
     let renderer, scene, camera, terrain, grassInstances, particles;
+    let grassUniforms = { uTime: { value: 0 }, uPlayerPos: { value: new THREE.Vector3(0, -100, 0) } };
     let character, characterModel, mixer, idleAction, runAction, currentAction;
     let moveTarget = null;
     let clickMarker;
@@ -115,30 +116,108 @@ export default function WebGPUTerrainDemo() {
         terrain.receiveShadow = true;
         scene.add(terrain);
 
-        // Grass
-        const grassBlade = new THREE.ConeGeometry(0.05, 0.8, 3);
-        grassBlade.translate(0, 0.4, 0);
+        // Advanced Interactive Grass
+        const grassGeo = new THREE.PlaneGeometry(0.12, 1.2, 1, 4);
+        grassGeo.translate(0, 0.6, 0); // Pivot at base
+        
+        // Taper the grass blades
+        const posAttribute = grassGeo.attributes.position;
+        for (let i = 0; i < posAttribute.count; i++) {
+          const y = posAttribute.getY(i);
+          const taper = 1.0 - (y / 1.2); 
+          const x = posAttribute.getX(i);
+          posAttribute.setX(i, x * taper); // Taper width
+        }
+        grassGeo.computeVertexNormals();
+
         const grassMat = new THREE.MeshStandardMaterial({
-          color: 0x5a8f4a,
+          color: 0xffffff, // White so we can tint in shader
           roughness: 0.6,
-          side: THREE.DoubleSide
+          metalness: 0.1,
+          side: THREE.DoubleSide,
+          onBeforeCompile: (shader) => {
+            shader.uniforms.uTime = grassUniforms.uTime;
+            shader.uniforms.uPlayerPos = grassUniforms.uPlayerPos;
+            
+            // Inject Vertex Shader logic
+            shader.vertexShader = `
+              uniform float uTime;
+              uniform vec3 uPlayerPos;
+              varying vec2 vGrassUv;
+            ` + shader.vertexShader;
+
+            shader.vertexShader = shader.vertexShader.replace(
+              '#include <begin_vertex>',
+              `
+              vec3 transformed = vec3( position );
+              vGrassUv = uv;
+              
+              // World position of the instance (approximate for bending logic)
+              vec4 instanceWorldPos = instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+              // Account for model matrix
+              instanceWorldPos = modelMatrix * instanceWorldPos;
+              
+              // Wind Effect
+              float sway = sin(uTime * 1.5 + instanceWorldPos.x * 0.5) * 0.5 + sin(uTime * 2.0 + instanceWorldPos.z * 0.5) * 0.5;
+              float bend = (position.y / 1.2); // Factor based on height (0 at bottom, 1 at top)
+              
+              // Apply wind
+              transformed.x += sway * 0.3 * bend;
+              transformed.z += sway * 0.1 * bend;
+              
+              // Player Interaction
+              float dist = distance(instanceWorldPos.xz, uPlayerPos.xz);
+              float radius = 2.5;
+              if(dist < radius){
+                 float interaction = smoothstep(radius, 0.0, dist);
+                 vec2 pushDir = normalize(instanceWorldPos.xz - uPlayerPos.xz);
+                 
+                 // Push away
+                 transformed.x += pushDir.x * interaction * 1.5 * bend;
+                 transformed.z += pushDir.y * interaction * 1.5 * bend;
+                 
+                 // Squashing effect to keep length somewhat consistent visually
+                 transformed.y -= interaction * 0.5 * bend;
+              }
+              `
+            );
+
+            // Inject Fragment Shader logic for gradient color
+            shader.fragmentShader = `
+              varying vec2 vGrassUv;
+            ` + shader.fragmentShader;
+            
+            shader.fragmentShader = shader.fragmentShader.replace(
+              '#include <color_fragment>',
+              `
+              vec3 bottomColor = vec3(0.1, 0.3, 0.05);
+              vec3 topColor = vec3(0.4, 0.7, 0.2);
+              vec3 gradientColor = mix(bottomColor, topColor, vGrassUv.y);
+              diffuseColor.rgb *= gradientColor;
+              `
+            );
+          }
         });
         
-        // Increased count and range for full terrain coverage
-        const grassCount = 20000;
-        grassInstances = new THREE.InstancedMesh(grassBlade, grassMat, grassCount);
-        grassInstances.castShadow = false;
+        const grassCount = 100000; // Dense grass
+        grassInstances = new THREE.InstancedMesh(grassGeo, grassMat, grassCount);
+        grassInstances.castShadow = false; // Performance
         grassInstances.receiveShadow = true;
+        grassInstances.frustumCulled = false; // Prevent culling when modified by shader
 
         const dummy = new THREE.Object3D();
         for (let i = 0; i < grassCount; i++) {
-          const x = (Math.random() - 0.5) * 200; // Expanded to cover full 200x200 terrain
+          const x = (Math.random() - 0.5) * 200; 
           const z = (Math.random() - 0.5) * 200;
           const y = getTerrainHeight(x, z);
           
           dummy.position.set(x, y, z);
           dummy.rotation.y = Math.random() * Math.PI * 2;
-          dummy.scale.setScalar(0.5 + Math.random() * 0.5);
+          
+          // Vary scale slightly
+          const scale = 0.8 + Math.random() * 0.4;
+          dummy.scale.set(scale, scale, scale);
+          
           dummy.updateMatrix();
           grassInstances.setMatrixAt(i, dummy.matrix);
         }
@@ -283,24 +362,10 @@ export default function WebGPUTerrainDemo() {
             fpsTime = 0;
           }
 
-          // Grass Wind
-          if (grassInstances) {
-            const dummy = new THREE.Object3D();
-            const count = grassInstances.count;
-            for (let i = 0; i < count; i++) {
-              grassInstances.getMatrixAt(i, dummy.matrix);
-              dummy.matrix.decompose(dummy.position, dummy.quaternion, dummy.scale);
-              
-              const wind = Math.sin(time * 2 + dummy.position.x * 0.5) * 0.05 + 
-                           Math.cos(time * 1.5 + dummy.position.z * 0.5) * 0.05;
-              
-              dummy.rotation.z = wind;
-              dummy.rotation.x = wind * 0.5;
-              
-              dummy.updateMatrix();
-              grassInstances.setMatrixAt(i, dummy.matrix);
-            }
-            grassInstances.instanceMatrix.needsUpdate = true;
+          // Update Grass Uniforms
+          grassUniforms.uTime.value = time;
+          if (character) {
+             grassUniforms.uPlayerPos.value.copy(character.position);
           }
 
           // Character Logic
