@@ -17,7 +17,7 @@ export default function WebGPUTerrainDemo() {
     if (!containerRef.current) return;
 
     let renderer, scene, camera, terrain, grassInstances, particles;
-    let character, mixer, idleAction, runAction, currentAction;
+    let character, characterModel, mixer, idleAction, runAction, currentAction;
     let moveTarget = null;
     let clickMarker;
     let cleanupClick;
@@ -123,14 +123,17 @@ export default function WebGPUTerrainDemo() {
           roughness: 0.6,
           side: THREE.DoubleSide
         });
-        grassInstances = new THREE.InstancedMesh(grassBlade, grassMat, 8000);
-        grassInstances.castShadow = false; // Optimize performance
+        
+        // Increased count and range for full terrain coverage
+        const grassCount = 20000;
+        grassInstances = new THREE.InstancedMesh(grassBlade, grassMat, grassCount);
+        grassInstances.castShadow = false;
         grassInstances.receiveShadow = true;
 
         const dummy = new THREE.Object3D();
-        for (let i = 0; i < 8000; i++) {
-          const x = (Math.random() - 0.5) * 100;
-          const z = (Math.random() - 0.5) * 100;
+        for (let i = 0; i < grassCount; i++) {
+          const x = (Math.random() - 0.5) * 200; // Expanded to cover full 200x200 terrain
+          const z = (Math.random() - 0.5) * 200;
           const y = getTerrainHeight(x, z);
           
           dummy.position.set(x, y, z);
@@ -181,13 +184,20 @@ export default function WebGPUTerrainDemo() {
         const loader = new GLTFLoader();
         
         loader.load('https://threejs.org/examples/models/gltf/Soldier.glb', (gltf) => {
-          character = gltf.scene;
-          character.traverse((o) => {
+          characterModel = gltf.scene;
+          characterModel.traverse((o) => {
             if (o.isMesh) {
               o.castShadow = true;
               o.receiveShadow = true;
             }
           });
+
+          // Rotate model 180 degrees
+          characterModel.rotation.y = Math.PI;
+
+          // Wrap in a group to separate movement logic from model rotation
+          character = new THREE.Group();
+          character.add(characterModel);
           
           // Initial character placement
           const startX = 0;
@@ -197,7 +207,8 @@ export default function WebGPUTerrainDemo() {
           
           scene.add(character);
 
-          mixer = new THREE.AnimationMixer(character);
+          // Mixer controls the mesh, not the group
+          mixer = new THREE.AnimationMixer(characterModel);
           const animations = gltf.animations;
           idleAction = mixer.clipAction(animations.find(c => c.name === 'Idle'));
           runAction = mixer.clipAction(animations.find(c => c.name === 'Run'));
@@ -275,7 +286,8 @@ export default function WebGPUTerrainDemo() {
           // Grass Wind
           if (grassInstances) {
             const dummy = new THREE.Object3D();
-            for (let i = 0; i < 8000; i++) {
+            const count = grassInstances.count;
+            for (let i = 0; i < count; i++) {
               grassInstances.getMatrixAt(i, dummy.matrix);
               dummy.matrix.decompose(dummy.position, dummy.quaternion, dummy.scale);
               
