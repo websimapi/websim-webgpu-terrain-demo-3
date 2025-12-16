@@ -117,14 +117,16 @@ export default function WebGPUTerrainDemo() {
         scene.add(terrain);
 
         // Advanced Interactive Grass
-        const grassGeo = new THREE.PlaneGeometry(0.1, 0.5, 1, 4);
-        grassGeo.translate(0, 0.25, 0); // Pivot at base
+        // Reduced height (0.35) and segments (2) for better performance with higher count
+        const grassHeight = 0.35;
+        const grassGeo = new THREE.PlaneGeometry(0.1, grassHeight, 1, 2);
+        grassGeo.translate(0, grassHeight / 2, 0); // Pivot at base
         
         // Taper the grass blades
         const posAttribute = grassGeo.attributes.position;
         for (let i = 0; i < posAttribute.count; i++) {
           const y = posAttribute.getY(i);
-          const taper = 1.0 - (y / 0.5); 
+          const taper = 1.0 - (y / grassHeight); 
           const x = posAttribute.getX(i);
           posAttribute.setX(i, x * taper); // Taper width
         }
@@ -152,32 +154,47 @@ export default function WebGPUTerrainDemo() {
               vec3 transformed = vec3( position );
               vGrassUv = uv;
               
-              // World position of the instance (approximate for bending logic)
+              // World position of the instance
               vec4 instanceWorldPos = instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0);
-              // Account for model matrix
               instanceWorldPos = modelMatrix * instanceWorldPos;
               
-              // Wind Effect
-              float sway = sin(uTime * 1.5 + instanceWorldPos.x * 0.5) * 0.5 + sin(uTime * 2.0 + instanceWorldPos.z * 0.5) * 0.5;
-              float bend = (position.y / 0.5); // Factor based on height (0 at bottom, 1 at top)
+              // Base bend factor based on vertex height (0.0 at bottom, 1.0 at top)
+              float hRatio = position.y / ${grassHeight.toFixed(2)};
               
-              // Apply wind
-              transformed.x += sway * 0.3 * bend;
-              transformed.z += sway * 0.1 * bend;
+              // Non-linear stiffness (stiffer at bottom)
+              float bendSensitivity = pow(hRatio, 2.0);
+
+              // Wind Effect with more variation
+              float windFreq = uTime * 1.5;
+              float sway = sin(windFreq + instanceWorldPos.x * 0.5) * 0.5 + 
+                           sin(windFreq * 1.2 + instanceWorldPos.z * 0.4) * 0.3 + 
+                           sin(windFreq * 0.5 + instanceWorldPos.x * 0.2 + instanceWorldPos.z * 0.2) * 0.2;
+              
+              transformed.x += sway * 0.15 * bendSensitivity;
+              transformed.z += sway * 0.05 * bendSensitivity;
               
               // Player Interaction
               float dist = distance(instanceWorldPos.xz, uPlayerPos.xz);
-              float radius = 2.5;
+              float radius = 3.5; // Larger interaction radius
+              
               if(dist < radius){
-                 float interaction = smoothstep(radius, 0.0, dist);
+                 // Smoother interaction curve
+                 float interaction = 1.0 - (dist / radius);
+                 interaction = smoothstep(0.0, 1.0, interaction);
+                 
+                 // Direction away from player
                  vec2 pushDir = normalize(instanceWorldPos.xz - uPlayerPos.xz);
                  
-                 // Push away
-                 transformed.x += pushDir.x * interaction * 1.5 * bend;
-                 transformed.z += pushDir.y * interaction * 1.5 * bend;
+                 // Push strength
+                 float pushStrength = 1.5 * interaction;
                  
-                 // Squashing effect to keep length somewhat consistent visually
-                 transformed.y -= interaction * 0.5 * bend;
+                 // Apply push (bending away)
+                 transformed.x += pushDir.x * pushStrength * bendSensitivity;
+                 transformed.z += pushDir.y * pushStrength * bendSensitivity;
+                 
+                 // Apply squash (lowering height to simulate bending over)
+                 // Using a curve that preserves volume perception
+                 transformed.y *= 1.0 - (interaction * 0.7 * bendSensitivity);
               }
               `
             );
@@ -199,11 +216,11 @@ export default function WebGPUTerrainDemo() {
           }
         });
         
-        const grassCount = 250000; // Dense grass
+        const grassCount = 800000; // Very dense grass
         grassInstances = new THREE.InstancedMesh(grassGeo, grassMat, grassCount);
-        grassInstances.castShadow = false; // Performance
+        grassInstances.castShadow = false; 
         grassInstances.receiveShadow = true;
-        grassInstances.frustumCulled = false; // Prevent culling when modified by shader
+        grassInstances.frustumCulled = false; 
 
         const dummy = new THREE.Object3D();
         for (let i = 0; i < grassCount; i++) {
@@ -214,8 +231,8 @@ export default function WebGPUTerrainDemo() {
           dummy.position.set(x, y, z);
           dummy.rotation.y = Math.random() * Math.PI * 2;
           
-          // Vary scale slightly
-          const scale = 0.8 + Math.random() * 0.4;
+          // Smaller overall scale for finer grass
+          const scale = 0.6 + Math.random() * 0.4;
           dummy.scale.set(scale, scale, scale);
           
           dummy.updateMatrix();
