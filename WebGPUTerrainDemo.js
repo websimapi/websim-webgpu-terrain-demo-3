@@ -1,8 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { Sun, Wind, Sparkles, MousePointer2, Loader2 } from 'lucide-react';
 import htm from 'htm';
+
+// New imports
+import { createTerrain, getTerrainHeight } from './Terrain.js';
+import { GrassSystem } from './Grass.js';
+import { Player } from './Player.js';
+import { createFireflies, updateFireflies } from './Particles.js';
 
 const html = htm.bind(React.createElement);
 
@@ -16,10 +21,12 @@ export default function WebGPUTerrainDemo() {
   useEffect(() => {
     if (!containerRef.current) return;
 
-    let renderer, scene, camera, terrain, grassInstances, particles;
-    let grassUniforms = { uTime: { value: 0 }, uPlayerPos: { value: new THREE.Vector3(0, -100, 0) } };
-    let character, characterModel, mixer, idleAction, runAction, currentAction;
-    let moveTarget = null;
+    // removed local variable declarations for terrain, grass, particles, player
+    // replaced with system instances
+    let renderer, scene, camera;
+    let grassSystem, player, particles;
+    let terrain; // still need ref for raycasting
+    
     let clickMarker;
     let cleanupClick;
     
@@ -46,7 +53,7 @@ export default function WebGPUTerrainDemo() {
         camera.position.set(0, 15, 20);
         camera.lookAt(0, 0, 0);
 
-        // Standard WebGL Renderer (Stable)
+        // Standard WebGL Renderer
         renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
         renderer.setPixelRatio(window.devicePixelRatio);
         renderer.setSize(containerRef.current.offsetWidth, containerRef.current.offsetHeight);
@@ -88,184 +95,17 @@ export default function WebGPUTerrainDemo() {
         const hemiLight = new THREE.HemisphereLight(0x87ceeb, 0x4a6f3a, 0.6);
         scene.add(hemiLight);
 
-        // Terrain Generation
-        const terrainGeo = new THREE.PlaneGeometry(200, 200, 128, 128);
-        const vertices = terrainGeo.attributes.position.array;
-        
-        for (let i = 0; i < vertices.length; i += 3) {
-          const x = vertices[i];
-          const y = vertices[i + 1];
-          // Match the getTerrainHeight function exactly
-          const noise = 
-            Math.sin(x * 0.05) * Math.cos(y * 0.05) * 3 +
-            Math.sin(x * 0.1) * Math.cos(y * 0.1) * 1.5 +
-            Math.sin(x * 0.2) * Math.cos(y * 0.2) * 0.5;
-          vertices[i + 2] = noise;
-        }
-        terrainGeo.computeVertexNormals();
+        // removed inline Terrain Generation logic 
+        // replaced with module call
+        terrain = createTerrain(scene);
 
-        const terrainMat = new THREE.MeshStandardMaterial({
-          color: 0x4a6f3a,
-          roughness: 0.8,
-          metalness: 0.1,
-          flatShading: false
-        });
+        // removed inline Grass Generation logic
+        // replaced with module call
+        grassSystem = new GrassSystem(scene, getTerrainHeight);
 
-        terrain = new THREE.Mesh(terrainGeo, terrainMat);
-        terrain.rotation.x = -Math.PI / 2;
-        terrain.receiveShadow = true;
-        scene.add(terrain);
-
-        // Advanced Interactive Grass
-        // Reduced height (0.35) and segments (2) for better performance with higher count
-        const grassHeight = 0.35;
-        const grassGeo = new THREE.PlaneGeometry(0.1, grassHeight, 1, 2);
-        grassGeo.translate(0, grassHeight / 2, 0); // Pivot at base
-        
-        // Taper the grass blades
-        const posAttribute = grassGeo.attributes.position;
-        for (let i = 0; i < posAttribute.count; i++) {
-          const y = posAttribute.getY(i);
-          const taper = 1.0 - (y / grassHeight); 
-          const x = posAttribute.getX(i);
-          posAttribute.setX(i, x * taper); // Taper width
-        }
-        grassGeo.computeVertexNormals();
-
-        const grassMat = new THREE.MeshStandardMaterial({
-          color: 0xffffff, // White so we can tint in shader
-          roughness: 0.6,
-          metalness: 0.1,
-          side: THREE.DoubleSide,
-          onBeforeCompile: (shader) => {
-            shader.uniforms.uTime = grassUniforms.uTime;
-            shader.uniforms.uPlayerPos = grassUniforms.uPlayerPos;
-            
-            // Inject Vertex Shader logic
-            shader.vertexShader = `
-              uniform float uTime;
-              uniform vec3 uPlayerPos;
-              varying vec2 vGrassUv;
-            ` + shader.vertexShader;
-
-            shader.vertexShader = shader.vertexShader.replace(
-              '#include <begin_vertex>',
-              `
-              vec3 transformed = vec3( position );
-              vGrassUv = uv;
-              
-              // World position of the instance
-              vec4 instanceWorldPos = instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0);
-              instanceWorldPos = modelMatrix * instanceWorldPos;
-              
-              // Base bend factor based on vertex height (0.0 at bottom, 1.0 at top)
-              float hRatio = position.y / ${grassHeight.toFixed(2)};
-              
-              // Non-linear stiffness (stiffer at bottom)
-              float bendSensitivity = pow(hRatio, 2.0);
-
-              // Wind Effect with more variation
-              float windFreq = uTime * 1.5;
-              float sway = sin(windFreq + instanceWorldPos.x * 0.5) * 0.5 + 
-                           sin(windFreq * 1.2 + instanceWorldPos.z * 0.4) * 0.3 + 
-                           sin(windFreq * 0.5 + instanceWorldPos.x * 0.2 + instanceWorldPos.z * 0.2) * 0.2;
-              
-              transformed.x += sway * 0.15 * bendSensitivity;
-              transformed.z += sway * 0.05 * bendSensitivity;
-              
-              // Player Interaction
-              float dist = distance(instanceWorldPos.xz, uPlayerPos.xz);
-              float radius = 0.8; // Adjusted to be closer to character width
-              
-              if(dist < radius){
-                 // Smoother interaction curve
-                 float interaction = 1.0 - (dist / radius);
-                 interaction = smoothstep(0.0, 1.0, interaction);
-                 
-                 // Direction away from player
-                 vec2 pushDir = normalize(instanceWorldPos.xz - uPlayerPos.xz);
-                 
-                 // Push strength
-                 float pushStrength = 1.0 * interaction;
-                 
-                 // Apply push (bending away)
-                 transformed.x += pushDir.x * pushStrength * bendSensitivity;
-                 transformed.z += pushDir.y * pushStrength * bendSensitivity;
-                 
-                 // Apply squash (lowering height to simulate bending over)
-                 // Using a curve that preserves volume perception
-                 transformed.y *= 1.0 - (interaction * 0.8 * bendSensitivity);
-              }
-              `
-            );
-
-            // Inject Fragment Shader logic for gradient color
-            shader.fragmentShader = `
-              varying vec2 vGrassUv;
-            ` + shader.fragmentShader;
-            
-            shader.fragmentShader = shader.fragmentShader.replace(
-              '#include <color_fragment>',
-              `
-              vec3 bottomColor = vec3(0.1, 0.3, 0.05);
-              vec3 topColor = vec3(0.4, 0.7, 0.2);
-              vec3 gradientColor = mix(bottomColor, topColor, vGrassUv.y);
-              diffuseColor.rgb *= gradientColor;
-              `
-            );
-          }
-        });
-        
-        const grassCount = 2000000; // Increased density
-        grassInstances = new THREE.InstancedMesh(grassGeo, grassMat, grassCount);
-        grassInstances.castShadow = false; 
-        grassInstances.receiveShadow = true;
-        grassInstances.frustumCulled = false; 
-
-        const dummy = new THREE.Object3D();
-        for (let i = 0; i < grassCount; i++) {
-          const x = (Math.random() - 0.5) * 200; 
-          const z = (Math.random() - 0.5) * 200;
-          const y = getTerrainHeight(x, z);
-          
-          dummy.position.set(x, y, z);
-          dummy.rotation.y = Math.random() * Math.PI * 2;
-          
-          // Smaller overall scale for finer grass
-          const scale = 0.6 + Math.random() * 0.4;
-          dummy.scale.set(scale, scale, scale);
-          
-          dummy.updateMatrix();
-          grassInstances.setMatrixAt(i, dummy.matrix);
-        }
-        scene.add(grassInstances);
-
-        // Fireflies
-        const particleGeo = new THREE.BufferGeometry();
-        const particleCount = 200;
-        const pPos = new Float32Array(particleCount * 3);
-        const velocities = [];
-
-        for (let i = 0; i < particleCount; i++) {
-          pPos[i * 3] = (Math.random() - 0.5) * 60;
-          pPos[i * 3 + 1] = Math.random() * 10 + 2;
-          pPos[i * 3 + 2] = (Math.random() - 0.5) * 60;
-          velocities.push({
-             x: (Math.random() - 0.5) * 0.05, 
-             y: (Math.random() - 0.5) * 0.02, 
-             z: (Math.random() - 0.5) * 0.05
-          });
-        }
-        particleGeo.setAttribute('position', new THREE.BufferAttribute(pPos, 3));
-        const particleMat = new THREE.PointsMaterial({
-          color: 0xffaa00,
-          size: 0.2,
-          transparent: true,
-          blending: THREE.AdditiveBlending
-        });
-        particles = new THREE.Points(particleGeo, particleMat);
-        particles.userData = { velocities };
-        scene.add(particles);
+        // removed inline Fireflies logic
+        // replaced with module call
+        particles = createFireflies(scene);
 
         // Click Marker
         const markerGeo = new THREE.RingGeometry(0.3, 0.5, 32);
@@ -277,46 +117,17 @@ export default function WebGPUTerrainDemo() {
 
         // Character Loading
         setStatus('Loading Character...');
-        const loader = new GLTFLoader();
         
-        loader.load('https://threejs.org/examples/models/gltf/Soldier.glb', (gltf) => {
-          characterModel = gltf.scene;
-          characterModel.traverse((o) => {
-            if (o.isMesh) {
-              o.castShadow = true;
-              o.receiveShadow = true;
-            }
-          });
-
-          // Rotate model 180 degrees
-          characterModel.rotation.y = Math.PI;
-
-          // Wrap in a group to separate movement logic from model rotation
-          character = new THREE.Group();
-          character.add(characterModel);
-          
-          // Initial character placement
-          const startX = 0;
-          const startZ = 0;
-          const startY = getTerrainHeight(startX, startZ);
-          character.position.set(startX, startY, startZ);
-          
-          scene.add(character);
-
-          // Mixer controls the mesh, not the group
-          mixer = new THREE.AnimationMixer(characterModel);
-          const animations = gltf.animations;
-          idleAction = mixer.clipAction(animations.find(c => c.name === 'Idle'));
-          runAction = mixer.clipAction(animations.find(c => c.name === 'Run'));
-          
-          idleAction.play();
-          currentAction = idleAction;
-
-          setStatus('rendering');
-        }, undefined, (err) => {
-          console.error("Failed to load character", err);
-          setStatus('Error loading character');
-        });
+        // removed inline Character Loading logic
+        // replaced with Player class
+        player = new Player(scene, getTerrainHeight);
+        try {
+            await player.load();
+            setStatus('rendering');
+        } catch (err) {
+            console.error("Failed to load character", err);
+            setStatus('Error loading character');
+        }
 
         // Input Handling
         const raycaster = new THREE.Raycaster();
@@ -325,7 +136,6 @@ export default function WebGPUTerrainDemo() {
         function onPointerDown(event) {
           if (!terrain) return;
           
-          // Calculate pointer position in normalized device coordinates (-1 to +1)
           const rect = renderer.domElement.getBoundingClientRect();
           pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
           pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
@@ -335,17 +145,12 @@ export default function WebGPUTerrainDemo() {
 
           if (intersects.length > 0) {
             const point = intersects[0].point;
-            moveTarget = point;
             
             clickMarker.position.copy(point);
             clickMarker.position.y += 0.1;
             clickMarker.visible = true;
 
-            if (character && currentAction !== runAction) {
-              currentAction.fadeOut(0.2);
-              runAction.reset().fadeIn(0.2).play();
-              currentAction = runAction;
-            }
+            player.setMoveTarget(point);
           }
         }
         
@@ -379,89 +184,22 @@ export default function WebGPUTerrainDemo() {
             fpsTime = 0;
           }
 
-          // Update Grass Uniforms
-          grassUniforms.uTime.value = time;
-          if (character) {
-             grassUniforms.uPlayerPos.value.copy(character.position);
+          // removed inline Grass updates
+          // replaced with system update
+          grassSystem.update(time, player.getPosition());
+
+          // removed inline Character/Camera logic
+          // replaced with player update
+          player.update(deltaTime * 0.001, camera);
+          
+          // Hide marker if player stopped
+          if (!player.isMoving) {
+              clickMarker.visible = false;
           }
 
-          // Character Logic
-          if (mixer) mixer.update(deltaTime * 0.001);
-
-          if (character) {
-            // Movement
-            if (moveTarget) {
-              const charPos = character.position.clone();
-              charPos.y = 0;
-              const targetPos = moveTarget.clone();
-              targetPos.y = 0;
-              
-              const direction = new THREE.Vector3().subVectors(targetPos, charPos);
-              const dist = direction.length();
-
-              if (dist > 0.2) {
-                direction.normalize();
-                const moveSpeed = 6;
-                
-                const moveVec = direction.multiplyScalar(moveSpeed * deltaTime * 0.001);
-                character.position.add(moveVec);
-                
-                // Snap to terrain height
-                const h = getTerrainHeight(character.position.x, character.position.z);
-                character.position.y = h;
-
-                // Rotate character
-                const lookPos = moveTarget.clone();
-                lookPos.y = character.position.y;
-                character.lookAt(lookPos);
-              } else {
-                moveTarget = null;
-                clickMarker.visible = false;
-                if (currentAction !== idleAction) {
-                  currentAction.fadeOut(0.2);
-                  idleAction.reset().fadeIn(0.2).play();
-                  currentAction = idleAction;
-                }
-              }
-            } else {
-              // Idle snapping
-              const h = getTerrainHeight(character.position.x, character.position.z);
-              character.position.y = h;
-            }
-
-            // Cinematic Camera Follow
-            const idealOffset = new THREE.Vector3(0, 8, -12);
-            idealOffset.applyQuaternion(character.quaternion);
-            idealOffset.add(character.position);
-            
-            const idealLookAt = new THREE.Vector3(0, 2, 0);
-            idealLookAt.applyQuaternion(character.quaternion);
-            idealLookAt.add(character.position);
-
-            // Smoothly interpolate
-            camera.position.lerp(idealOffset, 0.05);
-            
-            // For lookAt, we manually slerp the quaternion for smoother rotation
-            const tempCam = camera.clone();
-            tempCam.lookAt(idealLookAt);
-            camera.quaternion.slerp(tempCam.quaternion, 0.05);
-          }
-
-          // Particles
-          if (particles) {
-            const pos = particles.geometry.attributes.position.array;
-            const vels = particles.userData.velocities;
-            for(let i=0; i<vels.length; i++) {
-              pos[i*3] += vels[i].x;
-              pos[i*3+1] += vels[i].y;
-              pos[i*3+2] += vels[i].z;
-              
-              if(pos[i*3+1] < 1 || pos[i*3+1] > 15) vels[i].y *= -1;
-              if(Math.abs(pos[i*3]) > 60) vels[i].x *= -1;
-              if(Math.abs(pos[i*3+2]) > 60) vels[i].z *= -1;
-            }
-            particles.geometry.attributes.position.needsUpdate = true;
-          }
+          // removed inline Particles updates
+          // replaced with module update
+          updateFireflies(particles);
 
           renderer.render(scene, camera);
         }
@@ -472,13 +210,6 @@ export default function WebGPUTerrainDemo() {
         console.error("Init Error:", err);
         setStatus(`Error: ${err.message}`);
       }
-    }
-
-    // Helper for terrain height that matches geometry generation
-    function getTerrainHeight(x, z) {
-      return Math.sin(x * 0.05) * Math.cos(z * 0.05) * 3 +
-             Math.sin(x * 0.1) * Math.cos(z * 0.1) * 1.5 +
-             Math.sin(x * 0.2) * Math.cos(z * 0.2) * 0.5;
     }
 
     function handleResize() {
