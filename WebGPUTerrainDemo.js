@@ -175,7 +175,7 @@ export default function WebGPUTerrainDemo() {
               
               // Player Interaction
               float dist = distance(instanceWorldPos.xz, uPlayerPos.xz);
-              float radius = 3.5; // Larger interaction radius
+              float radius = 0.8; // Adjusted to be closer to character width
               
               if(dist < radius){
                  // Smoother interaction curve
@@ -186,7 +186,7 @@ export default function WebGPUTerrainDemo() {
                  vec2 pushDir = normalize(instanceWorldPos.xz - uPlayerPos.xz);
                  
                  // Push strength
-                 float pushStrength = 1.5 * interaction;
+                 float pushStrength = 1.0 * interaction;
                  
                  // Apply push (bending away)
                  transformed.x += pushDir.x * pushStrength * bendSensitivity;
@@ -194,7 +194,7 @@ export default function WebGPUTerrainDemo() {
                  
                  // Apply squash (lowering height to simulate bending over)
                  // Using a curve that preserves volume perception
-                 transformed.y *= 1.0 - (interaction * 0.7 * bendSensitivity);
+                 transformed.y *= 1.0 - (interaction * 0.8 * bendSensitivity);
               }
               `
             );
@@ -216,7 +216,7 @@ export default function WebGPUTerrainDemo() {
           }
         });
         
-        const grassCount = 800000; // Very dense grass
+        const grassCount = 2000000; // Increased density
         grassInstances = new THREE.InstancedMesh(grassGeo, grassMat, grassCount);
         grassInstances.castShadow = false; 
         grassInstances.receiveShadow = true;
