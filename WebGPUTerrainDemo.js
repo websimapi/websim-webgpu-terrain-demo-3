@@ -117,14 +117,14 @@ export default function WebGPUTerrainDemo() {
         scene.add(terrain);
 
         // Advanced Interactive Grass
-        const grassGeo = new THREE.PlaneGeometry(0.12, 1.2, 1, 4);
-        grassGeo.translate(0, 0.6, 0); // Pivot at base
+        const grassGeo = new THREE.PlaneGeometry(0.1, 0.5, 1, 4);
+        grassGeo.translate(0, 0.25, 0); // Pivot at base
         
         // Taper the grass blades
         const posAttribute = grassGeo.attributes.position;
         for (let i = 0; i < posAttribute.count; i++) {
           const y = posAttribute.getY(i);
-          const taper = 1.0 - (y / 1.2); 
+          const taper = 1.0 - (y / 0.5); 
           const x = posAttribute.getX(i);
           posAttribute.setX(i, x * taper); // Taper width
         }
@@ -159,7 +159,7 @@ export default function WebGPUTerrainDemo() {
               
               // Wind Effect
               float sway = sin(uTime * 1.5 + instanceWorldPos.x * 0.5) * 0.5 + sin(uTime * 2.0 + instanceWorldPos.z * 0.5) * 0.5;
-              float bend = (position.y / 1.2); // Factor based on height (0 at bottom, 1 at top)
+              float bend = (position.y / 0.5); // Factor based on height (0 at bottom, 1 at top)
               
               // Apply wind
               transformed.x += sway * 0.3 * bend;
@@ -199,7 +199,7 @@ export default function WebGPUTerrainDemo() {
           }
         });
         
-        const grassCount = 100000; // Dense grass
+        const grassCount = 250000; // Dense grass
         grassInstances = new THREE.InstancedMesh(grassGeo, grassMat, grassCount);
         grassInstances.castShadow = false; // Performance
         grassInstances.receiveShadow = true;
